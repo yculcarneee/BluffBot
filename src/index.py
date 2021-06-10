@@ -37,6 +37,8 @@ class BluffBot(commands.Cog):
             'deck/KD.png', 'deck/KC.png', 'deck/KH.png', 'deck/KS.png'
         ]
         self.turn = 0
+        self.values_sort_order = {'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6, '8': 7, '9': 8, '10': 9, 'J': 10, 'Q': 11, 'K': 12}
+        self.suits_sort_order = {'C': 0, 'D': 1, 'H': 2, 'S': 3}
 
     async def update_embed(self, message, embed, index, new_embed_value):
         embed.set_field_at(index, name = embed.fields[index].name, value = new_embed_value, inline = False)
@@ -77,7 +79,8 @@ class BluffBot(commands.Cog):
         for hand in self.hands:
             current_hand = []
             for card in hand:
-                current_hand.append(card[5:7])
+                card_notation = card.split('/')[1][:-4]
+                current_hand.append(card_notation)
             hands_notation.append(current_hand)
         
         return hands_notation
@@ -100,6 +103,18 @@ class BluffBot(commands.Cog):
             self.convert_hand_to_image(hand, index + 1)
 
         return hands
+
+    def order_hand_by_values(self, hand):
+        return sorted(hand, key=lambda card: (self.values_sort_order[card[:-1]], card[-1]))
+
+    def order_hand_by_suits(self, hand):
+        return sorted(hand, key=lambda card: (self.suits_sort_order[card[-1]], self.values_sort_order[card[:-1]]))
+
+    def get_hand_as_numbered_list(self, hand):
+        numbered_list = ''
+        for index, card in enumerate(hand):
+            numbered_list += f'{index + 1}. {card}\n'
+        return numbered_list
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -182,7 +197,7 @@ class BluffBot(commands.Cog):
             self.hands = self.divide_deck_into_hands()
             self.hands_notation = self.get_hands_notation()
 
-            self.turn = random.choice(range(0, len(self.player_list)))
+            self.turn = random.randint(0, len(self.player_list) - 1)
 
             for index, channel in enumerate(self.channel_list):
                 file = discord.File(f'hands/hand-{index+1}.jpg')
@@ -216,15 +231,51 @@ class BluffBot(commands.Cog):
 
         if message.channel not in self.channel_list or message.channel != self.channel_list[index]:
             embed = discord.Embed()
-            embed.set_author(name = 'You can only use this command in your Bluff channel')
+            embed.set_author(name = 'You can only use this command in your own Bluff channel')
             await message.channel.send(embed = embed)
             return
         
         current_hand = self.hands_notation[index]
         hand_embed = discord.Embed(title = 'Your cards', color = 0xff0000)    
-        hand_embed.add_field(name = '\u200b', value = ', '.join(current_hand), inline = False)
+        hand_embed.add_field(name = '\u200b', value = self.get_hand_as_numbered_list(current_hand), inline = False)
         await message.channel.send(embed = hand_embed)
         
+    @commands.command()
+    async def shuffle(self, message, arg = None):
+        if self.game_status != 'Playing':
+            embed = discord.Embed()
+            embed.set_author(name = 'No game is currently in progress')
+            await message.channel.send(embed = embed)
+            return 
+
+        index = self.player_list.index(message.author.name)
+
+        if message.channel not in self.channel_list or message.channel != self.channel_list[index]:
+            embed = discord.Embed()
+            embed.set_author(name = 'You can only use this command in your own Bluff channel')
+            await message.channel.send(embed = embed)
+            return
+
+        if arg == 'suits':
+            self.hands_notation[index] = self.order_hand_by_suits(self.hands_notation[index])
+            hand_embed = discord.Embed(title = 'Your cards', color = 0xff0000)    
+            hand_embed.add_field(name = '\u200b', value = self.get_hand_as_numbered_list(self.hands_notation[index]), inline = False)
+            await message.channel.send(embed = hand_embed)
+        elif arg == 'values':
+            self.hands_notation[index] = self.order_hand_by_values(self.hands_notation[index])
+            hand_embed = discord.Embed(title = 'Your cards', color = 0xff0000)    
+            hand_embed.add_field(name = '\u200b', value = self.get_hand_as_numbered_list(self.hands_notation[index]), inline = False)
+            await message.channel.send(embed = hand_embed)
+        elif arg is None:
+            embed = discord.Embed()
+            embed.set_author(name = 'You need to pass a shuffling method after /shuffle. The available options are \'suits\' and \'values\'')
+            await message.channel.send(embed = embed)
+            return
+        else:
+            embed = discord.Embed()
+            embed.set_author(name = 'Invalid option sent with /shuffle. The available options are \'suits\' and \'values\'')
+            await message.channel.send(embed = embed)
+            return
 
     @commands.command()
     async def endgame(self, ctx):
@@ -242,7 +293,7 @@ class BluffBot(commands.Cog):
         self.extra = 0
         self.channel_list = []
         self.message_id = 0
-        self.player_list = []
+        self.player_list = [] 
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
