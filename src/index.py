@@ -1,13 +1,16 @@
 import discord
 from PIL import Image
-import math
 from discord.ext import commands 
 from discord.utils import get
-
 from dotenv import load_dotenv
+
 import os
+import re
 import random
 import asyncio
+from operator import itemgetter
+import math
+
 
 load_dotenv()
 
@@ -39,6 +42,10 @@ class BluffBot(commands.Cog):
         self.turn = 0
         self.values_sort_order = {'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6, '8': 7, '9': 8, '10': 9, 'J': 10, 'Q': 11, 'K': 12}
         self.suits_sort_order = {'C': 0, 'D': 1, 'H': 2, 'S': 3}
+        self.current_pot = []
+        self.cards_flag = 'Initial'
+        self.bluff_flag = 'Initial'
+        self.current_bluff = {}
 
     async def update_embed(self, message, embed, index, new_embed_value):
         embed.set_field_at(index, name = embed.fields[index].name, value = new_embed_value, inline = False)
@@ -276,6 +283,120 @@ class BluffBot(commands.Cog):
             embed.set_author(name = 'Invalid option sent with /shuffle. The available options are \'suits\' and \'values\'')
             await message.channel.send(embed = embed)
             return
+
+    @commands.command()
+    async def play(self, message):
+        # TODO: Fix bug where if you put 2 wrong tries for card and 1 wrong try for bluff, invalid bluff appears twice. Maybe try custom Exception classes
+        if self.cards_flag != 'Initial' or self.bluff_flag != 'Initial':
+            return
+
+        if self.game_status != 'Playing':
+            embed = discord.Embed()
+            embed.set_author(name = 'No game is currently in progress')
+            await message.channel.send(embed = embed)
+            return 
+
+        index = self.player_list.index(message.author.name)
+
+        if message.channel not in self.channel_list or message.channel != self.channel_list[index]:
+            embed = discord.Embed()
+            embed.set_author(name = 'You can only use this command in your own Bluff channel')
+            await message.channel.send(embed = embed)
+            return
+
+        if self.turn != index:
+            embed = discord.Embed()
+            embed.set_author(name = f'Wait till your turn to play')
+            await message.channel.send(embed = embed)
+            return      
+
+        channel = message.channel
+        current_hand = self.hands_notation[index]
+
+        self.cards_flag = 'Processing'
+
+        while self.cards_flag == 'Processing':
+            await channel.send('What cards do you want to play?')
+
+            def cards_check(m):   
+                cards_from_hand_range = re.search(r"^[0-9]+ *- *[0-9]+\Z", m.content)
+                cards_from_hand_individual = re.search(r"^([0-9 ,]+)\Z", m.content)
+                print(cards_from_hand_individual, cards_from_hand_range)
+                if cards_from_hand_range is None and cards_from_hand_individual is None:
+                    raise Exception('You can\'t do that Yash')
+
+                cards_from_hand = None
+                if cards_from_hand_range is None:
+                    cards_from_hand = cards_from_hand_individual
+                else:
+                    cards_from_hand = cards_from_hand_range
+
+                cards = None
+                if ',' in cards_from_hand.group():
+                    cards_indices = cards_from_hand.group().split(',')
+                    cards_indices[:] = [int(card) - 1 for card in cards_indices]    
+                    cards = list(itemgetter(*cards_indices)(current_hand))
+                    
+                    if len(set(cards)) != len(cards):
+                        raise Exception('Mat kar yaar')
+                else:
+                    left_bound, right_bound = cards_from_hand.group().split('-')
+                    left_bound, right_bound = int(left_bound), int(right_bound)
+
+                    if left_bound < 1 or right_bound > len(current_hand) or left_bound >= right_bound:
+                        raise Exception('Oh no. Oh no. Oh no no no no no no.')
+
+                    cards = current_hand[int(left_bound) - 1 : int(right_bound)]
+
+                self.current_pot.append(cards)
+
+                return cards_from_hand_range is not None or cards_from_hand_individual is not None and m.channel == channel
+            try:
+                cards = await bot.wait_for('message', check = cards_check)
+            except Exception as ex:
+                embed = discord.Embed()
+                embed.add_field(name = '\u200b', value = f'Cards to be played should be in the format **`range of indices of cards from your hand/specific indices of cards from your hand seperated by a comma`**')
+                await channel.send(embed = embed)
+            else:
+                self.cards_flag = 'Initial'
+
+        await channel.send(self.current_pot)
+
+        self.bluff_flag = 'Processing'
+
+        while self.bluff_flag == 'Processing':
+            await channel.send('What bluff do you want to make?')
+
+            def bluff_check(m):
+                bluff_match = re.search(r"^[0-9]+ *- *([2-9]|10|[J,K,A,Q])\Z", m.content)
+
+                if bluff_match is None:
+                    raise Exception('Utha le re baba')
+
+                bluff = bluff_match.group()
+
+                number_of_cards_str, type_of_cards_str = bluff.split('-')
+                number_of_cards = int(number_of_cards_str)
+                
+                if number_of_cards < 1 or number_of_cards > len(current_hand):
+                    raise Exception('Kaisi teri khudgarzi')
+
+                self.current_bluff = {
+                    'number_of_cards': int(number_of_cards_str),
+                    'type_of_cards': type_of_cards_str
+                }
+                
+                return bluff_match is not None and m.channel == channel 
+            try:
+                cards = await bot.wait_for('message', check = bluff_check)
+            except Exception as ex:
+                embed = discord.Embed()
+                embed.add_field(name = '\u200b', value = f'Invalid bluff')
+                await channel.send(embed = embed)
+            else:
+                self.bluff_flag = 'Initial'
+        
+        await channel.send(self.current_bluff)
 
     @commands.command()
     async def endgame(self, ctx):
