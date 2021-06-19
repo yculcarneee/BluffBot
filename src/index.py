@@ -123,6 +123,62 @@ class BluffBot(commands.Cog):
             numbered_list += f'{index + 1}. {card}\n'
         return numbered_list
 
+    def check_cards_played(self, cards, current_hand):
+        cards_from_hand_range = re.search(r"^[0-9]+ *- *[0-9]+\Z", cards)
+        cards_from_hand_individual = re.search(r"^([0-9 ,]+)\Z", cards)
+
+        if cards_from_hand_range is None and cards_from_hand_individual is None:
+            return False
+
+        cards_from_hand = None
+        if cards_from_hand_range is None:
+            cards_from_hand = cards_from_hand_individual
+        else:
+            cards_from_hand = cards_from_hand_range
+
+        cards = None
+        if ',' in cards_from_hand.group():
+            cards_indices = cards_from_hand.group().split(',')
+            cards_indices[:] = [int(card) - 1 for card in cards_indices]    
+            cards = list(itemgetter(*cards_indices)(current_hand))
+            
+            if len(set(cards)) != len(cards):
+                return False
+        else:
+            left_bound, right_bound = cards_from_hand.group().split('-')
+            left_bound, right_bound = int(left_bound), int(right_bound)
+
+            if left_bound < 1 or right_bound > len(current_hand) or left_bound >= right_bound:
+                return False
+
+            cards = current_hand[int(left_bound) - 1 : int(right_bound)]
+
+        self.current_pot.append(cards)
+
+        return True
+
+    def check_bluff_played(self, bluff, current_hand):
+        bluff_match = re.search(r"^[0-9]+ *- *([2-9]|10|[J,K,A,Q])\Z", bluff)
+
+        if bluff_match is None:
+            return False
+
+        bluff = bluff_match.group()
+
+        number_of_cards_str, type_of_cards_str = bluff.split('-')
+        number_of_cards = int(number_of_cards_str)
+        
+        if number_of_cards < 1 or number_of_cards > len(current_hand) or len(self.current_pot[-1]) != number_of_cards:
+            return False
+
+        self.current_bluff = {
+            'number_of_cards': int(number_of_cards_str),
+            'type_of_cards': type_of_cards_str
+        }
+        
+        return True
+
+
     @commands.Cog.listener()
     async def on_ready(self):
         print('Logged in as')
@@ -286,7 +342,6 @@ class BluffBot(commands.Cog):
 
     @commands.command()
     async def play(self, message):
-        # TODO: Fix bug where if you put 2 wrong tries for card and 1 wrong try for bluff, invalid bluff appears twice. Maybe try custom Exception classes
         if self.cards_flag != 'Initial' or self.bluff_flag != 'Initial':
             return
 
@@ -318,86 +373,62 @@ class BluffBot(commands.Cog):
         while self.cards_flag == 'Processing':
             await channel.send('What cards do you want to play?')
 
-            def cards_check(m):   
-                cards_from_hand_range = re.search(r"^[0-9]+ *- *[0-9]+\Z", m.content)
-                cards_from_hand_individual = re.search(r"^([0-9 ,]+)\Z", m.content)
-                print(cards_from_hand_individual, cards_from_hand_range)
-                if cards_from_hand_range is None and cards_from_hand_individual is None:
-                    raise Exception('You can\'t do that Yash')
+            def message_check(message):
+                return message.channel == channel and self.player_list.index(message.author.name) == index
 
-                cards_from_hand = None
-                if cards_from_hand_range is None:
-                    cards_from_hand = cards_from_hand_individual
-                else:
-                    cards_from_hand = cards_from_hand_range
+            cards = await bot.wait_for('message', check = message_check)
 
-                cards = None
-                if ',' in cards_from_hand.group():
-                    cards_indices = cards_from_hand.group().split(',')
-                    cards_indices[:] = [int(card) - 1 for card in cards_indices]    
-                    cards = list(itemgetter(*cards_indices)(current_hand))
-                    
-                    if len(set(cards)) != len(cards):
-                        raise Exception('Mat kar yaar')
-                else:
-                    left_bound, right_bound = cards_from_hand.group().split('-')
-                    left_bound, right_bound = int(left_bound), int(right_bound)
+            if self.player_list.index(cards.author.name) != index:
+                embed = discord.Embed()
+                embed.set_author(name = f'Wait till your turn to play')
+                await message.channel.send(embed = embed)
+                continue
 
-                    if left_bound < 1 or right_bound > len(current_hand) or left_bound >= right_bound:
-                        raise Exception('Oh no. Oh no. Oh no no no no no no.')
+            if cards.channel != channel:
+                embed = discord.Embed()
+                embed.set_author(name = 'You can only play in your own Bluff channel')
+                await message.channel.send(embed = embed)
+                return
 
-                    cards = current_hand[int(left_bound) - 1 : int(right_bound)]
-
-                self.current_pot.append(cards)
-
-                return cards_from_hand_range is not None or cards_from_hand_individual is not None and m.channel == channel
-            try:
-                cards = await bot.wait_for('message', check = cards_check)
-            except Exception as ex:
+            if not self.check_cards_played(cards.content, current_hand):
                 embed = discord.Embed()
                 embed.add_field(name = '\u200b', value = f'Cards to be played should be in the format **`range of indices of cards from your hand/specific indices of cards from your hand seperated by a comma`**')
                 await channel.send(embed = embed)
             else:
                 self.cards_flag = 'Initial'
 
-        await channel.send(self.current_pot)
+        # await channel.send(self.current_pot)
 
         self.bluff_flag = 'Processing'
 
         while self.bluff_flag == 'Processing':
             await channel.send('What bluff do you want to make?')
 
-            def bluff_check(m):
-                bluff_match = re.search(r"^[0-9]+ *- *([2-9]|10|[J,K,A,Q])\Z", m.content)
+            def message_check(message):
+                return message.channel == channel and self.player_list.index(message.author.name) == index
 
-                if bluff_match is None:
-                    raise Exception('Utha le re baba')
-
-                bluff = bluff_match.group()
-
-                number_of_cards_str, type_of_cards_str = bluff.split('-')
-                number_of_cards = int(number_of_cards_str)
-                
-                if number_of_cards < 1 or number_of_cards > len(current_hand):
-                    raise Exception('Kaisi teri khudgarzi')
-
-                self.current_bluff = {
-                    'number_of_cards': int(number_of_cards_str),
-                    'type_of_cards': type_of_cards_str
-                }
-                
-                return bluff_match is not None and m.channel == channel 
-            try:
-                cards = await bot.wait_for('message', check = bluff_check)
-            except Exception as ex:
+            bluff = await bot.wait_for('message', check = message_check)
+            
+            if not self.check_bluff_played(bluff.content, current_hand):
                 embed = discord.Embed()
                 embed.add_field(name = '\u200b', value = f'Invalid bluff')
                 await channel.send(embed = embed)
             else:
                 self.bluff_flag = 'Initial'
         
-        await channel.send(self.current_bluff)
+        # await channel.send(self.current_bluff)
 
+        for index, channel in enumerate(self.channel_list):
+            embed = None
+            if index == self.turn:
+                embed = discord.Embed(title = f'You played {self.current_bluff.get("number_of_cards")} {self.current_bluff.get("type_of_cards")}')
+            else:
+                embed = discord.Embed(title = f'{self.player_list[self.turn]} played {self.current_bluff.get("number_of_cards")} {self.current_bluff.get("type_of_cards")}')
+            embed.set_footer(text = f'{self.player_list[(self.turn + 1) % len(self.player_list)]} goes next')
+            await channel.send(embed = embed)
+
+        self.turn = (self.turn + 1) % len(self.player_list)
+        
     @commands.command()
     async def endgame(self, ctx):
         if self.game_status == 'Initial':
