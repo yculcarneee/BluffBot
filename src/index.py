@@ -46,6 +46,7 @@ class BluffBot(commands.Cog):
         self.cards_flag = 'Initial'
         self.bluff_flag = 'Initial'
         self.current_bluff = {}
+        self.round_initiated = False
 
     async def update_embed(self, message, embed, index, new_embed_value):
         embed.set_field_at(index, name = embed.fields[index].name, value = new_embed_value, inline = False)
@@ -123,7 +124,12 @@ class BluffBot(commands.Cog):
             numbered_list += f'{index + 1}. {card}\n'
         return numbered_list
 
-    def check_cards_played(self, cards, current_hand):
+    def remove_cards_from_hand(self, cards_indices, index):
+        for i in sorted(cards_indices, reverse = True):
+            del self.hands[index][i]
+            del self.hands_notation[index][i]
+
+    def check_cards_played(self, cards, current_hand, index):
         cards_from_hand_range = re.search(r"^[0-9]+ *- *[0-9]+\Z", cards)
         cards_from_hand_individual = re.search(r"^([0-9 ,]+)\Z", cards)
 
@@ -137,14 +143,7 @@ class BluffBot(commands.Cog):
             cards_from_hand = cards_from_hand_range
 
         cards = None
-        if ',' in cards_from_hand.group():
-            cards_indices = cards_from_hand.group().split(',')
-            cards_indices[:] = [int(card) - 1 for card in cards_indices]    
-            cards = list(itemgetter(*cards_indices)(current_hand))
-            
-            if len(set(cards)) != len(cards):
-                return False
-        else:
+        if '-' in cards_from_hand.group():
             left_bound, right_bound = cards_from_hand.group().split('-')
             left_bound, right_bound = int(left_bound), int(right_bound)
 
@@ -152,6 +151,21 @@ class BluffBot(commands.Cog):
                 return False
 
             cards = current_hand[int(left_bound) - 1 : int(right_bound)]
+
+            self.remove_cards_from_hand([*range(int(left_bound) - 1, int(right_bound))], index)
+        else:
+            cards_indices = cards_from_hand.group().split(',')
+            cards_indices[:] = [int(card) - 1 for card in cards_indices]    
+
+            if any(card_index > len(current_hand) - 1 or card_index < 0 for card_index in cards_indices):
+                return False
+
+            cards = list(itemgetter(*cards_indices)(current_hand))
+            
+            if len(set(cards)) != len(cards):
+                return False
+
+            self.remove_cards_from_hand(cards_indices, index)
 
         self.current_pot.append(cards)
 
@@ -342,9 +356,6 @@ class BluffBot(commands.Cog):
 
     @commands.command()
     async def play(self, message):
-        if self.cards_flag != 'Initial' or self.bluff_flag != 'Initial':
-            return
-
         if self.game_status != 'Playing':
             embed = discord.Embed()
             embed.set_author(name = 'No game is currently in progress')
@@ -364,6 +375,15 @@ class BluffBot(commands.Cog):
             embed.set_author(name = f'Wait till your turn to play')
             await message.channel.send(embed = embed)
             return      
+
+        if self.round_initiated:
+            embed = discord.Embed()
+            embed.set_author(name = f'A round is currently in progress. You can only add cards to the pot using /add, pass this round using /pass, or challenge the last player\'s bluff using /challenge when it\'s your turn.')
+            await message.channel.send(embed = embed)
+            return      
+
+        if self.cards_flag != 'Initial' or self.bluff_flag != 'Initial':
+            return
 
         channel = message.channel
         current_hand = self.hands_notation[index]
@@ -390,7 +410,7 @@ class BluffBot(commands.Cog):
                 await message.channel.send(embed = embed)
                 return
 
-            if not self.check_cards_played(cards.content, current_hand):
+            if not self.check_cards_played(cards.content, current_hand, index):
                 embed = discord.Embed()
                 embed.add_field(name = '\u200b', value = f'Cards to be played should be in the format **`range of indices of cards from your hand/specific indices of cards from your hand seperated by a comma`**')
                 await channel.send(embed = embed)
@@ -429,6 +449,84 @@ class BluffBot(commands.Cog):
 
         self.turn = (self.turn + 1) % len(self.player_list)
         
+        self.round_initiated = True
+
+    @commands.command()
+    async def add(self, message):
+        if self.game_status != 'Playing':
+            embed = discord.Embed()
+            embed.set_author(name = 'No game is currently in progress')
+            await message.channel.send(embed = embed)
+            return 
+
+        index = self.player_list.index(message.author.name)
+
+        if message.channel not in self.channel_list or message.channel != self.channel_list[index]:
+            embed = discord.Embed()
+            embed.set_author(name = 'You can only use this command in your own Bluff channel')
+            await message.channel.send(embed = embed)
+            return
+
+        if self.turn != index:
+            embed = discord.Embed()
+            embed.set_author(name = f'Wait till your turn to play')
+            await message.channel.send(embed = embed)
+            return      
+
+        if not self.round_initiated:
+            embed = discord.Embed()
+            embed.set_author(name = 'No round is currently in progress right now')
+            await message.channel.send(embed = embed)
+            return 
+
+        if self.cards_flag != 'Initial':
+            return
+
+        channel = message.channel
+        current_hand = self.hands_notation[index]
+
+        self.cards_flag = 'Processing'
+
+        while self.cards_flag == 'Processing':
+            await channel.send('What cards do you want to play?')
+
+            def message_check(message):
+                return message.channel == channel and self.player_list.index(message.author.name) == index
+
+            cards = await bot.wait_for('message', check = message_check)
+
+            if self.player_list.index(cards.author.name) != index:
+                embed = discord.Embed()
+                embed.set_author(name = f'Wait till your turn to play')
+                await message.channel.send(embed = embed)
+                continue
+
+            if cards.channel != channel:
+                embed = discord.Embed()
+                embed.set_author(name = 'You can only play in your own Bluff channel')
+                await message.channel.send(embed = embed)
+                return
+
+            if not self.check_cards_played(cards.content, current_hand, index):
+                embed = discord.Embed()
+                embed.add_field(name = '\u200b', value = f'Cards to be played should be in the format **`range of indices of cards from your hand/specific indices of cards from your hand seperated by a comma`**')
+                await channel.send(embed = embed)
+            else:
+                self.cards_flag = 'Initial'
+
+        await channel.send(self.current_pot)
+
+        for index, channel in enumerate(self.channel_list):
+            embed = None
+            if index == self.turn:
+                embed = discord.Embed(title = f'You added {len(self.current_pot[-1])} card(s) to the pot')
+            else:
+                embed = discord.Embed(title = f'{self.player_list[self.turn]} added {len(self.current_pot[-1])} card(s) to the pot')
+            embed.set_footer(text = f'{self.player_list[(self.turn + 1) % len(self.player_list)]} goes next')
+            await channel.send(embed = embed)
+
+        self.turn = (self.turn + 1) % len(self.player_list)
+
     @commands.command()
     async def endgame(self, ctx):
         if self.game_status == 'Initial':
