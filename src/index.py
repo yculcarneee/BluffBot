@@ -10,6 +10,7 @@ import re
 import random
 import asyncio
 from operator import itemgetter
+import itertools
 import math
 
 
@@ -198,6 +199,13 @@ class BluffBot(commands.Cog):
         }
         
         return True
+
+    def call_bluff(self, previous_hand):
+        for card in previous_hand:
+            if card[:-1] != self.current_bluff['type_of_cards']:
+                return True
+
+        return False
 
     def clear_round_state(self):
         self.current_pot = []
@@ -600,6 +608,62 @@ class BluffBot(commands.Cog):
                 embed = discord.Embed(title = f'{self.player_list[turn]} passed this round')
             embed.set_footer(text = f'{self.player_list[self.turn]} goes next')
             await channel.send(embed = embed)
+
+
+    @commands.command()
+    async def challenge(self, message):
+        if self.game_status != 'Playing':
+            embed = discord.Embed()
+            embed.set_author(name = 'No game is currently in progress')
+            await message.channel.send(embed = embed)
+            return 
+
+        index = self.player_list.index(message.author.name)
+
+        if message.channel not in self.channel_list or message.channel != self.channel_list[index]:
+            embed = discord.Embed()
+            embed.set_author(name = 'You can only use this command in your own Bluff channel')
+            await message.channel.send(embed = embed)
+            return
+
+        if self.turn != index:
+            embed = discord.Embed()
+            embed.set_author(name = f'Wait till your turn to play')
+            await message.channel.send(embed = embed)
+            return      
+
+        if not self.round_initiated:
+            embed = discord.Embed()
+            embed.set_author(name = 'No round is currently in progress right now')
+            await message.channel.send(embed = embed)
+            return 
+
+        previous_hand = self.current_pot[-1]
+
+        if self.call_bluff(previous_hand):
+            self.hands[(self.turn + len(self.player_list) - 1) % len(self.player_list)].extend(list(itertools.chain(*self.current_pot)))
+            self.hands_notation[(self.turn + len(self.player_list) - 1) % len(self.player_list)].extend(list(itertools.chain(*self.current_pot)))
+            for index, channel in enumerate(self.channel_list):
+                embed = None
+                if index == self.turn:
+                    embed = discord.Embed(title = f'You called the bluff. {self.player_list[(self.turn + len(self.player_list) - 1) % len(self.player_list)]} will now recieve the entire pot.')
+                else:
+                    embed = discord.Embed(title = f'{self.player_list[self.turn]} called the bluff. {self.player_list[(self.turn + len(self.player_list) - 1) % len(self.player_list)]} will now recieve the entire pot.')
+                embed.set_footer(text = f'{self.player_list[self.turn]} starts a new round')
+                await channel.send(embed = embed)
+        else:
+            self.hands[self.turn].extend(list(itertools.chain(*self.current_pot)))
+            self.hands_notation[self.turn].extend(list(itertools.chain(*self.current_pot)))
+            for index, channel in enumerate(self.channel_list):
+                embed = None
+                if index == self.turn:
+                    embed = discord.Embed(title = f'You called the bluff and missed. You will now recieve the entire pot.')
+                else:
+                    embed = discord.Embed(title = f'{self.player_list[self.turn]} called the bluff and missed. {self.player_list[self.turn]} will now recieve the entire pot.')
+                embed.set_footer(text = f'{self.player_list[(self.turn + 1) % len(self.player_list)]} starts a new round') 
+                await channel.send(embed = embed)
+            self.turn = (self.turn + 1) % len(self.player_list)
+        self.clear_round_state()
 
     @commands.command()
     async def endgame(self, ctx):
